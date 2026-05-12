@@ -63,3 +63,10 @@ Unlike basic chat apps that spawn a new thread for every user (which is heavy), 
 TUI Management
 
 The client uses carriage returns (\r) and ANSI escape codes to ensure that incoming messages don't break the user's current input line, providing a smooth CLI experience.
+
+## ⚖️ License
+This project is licensed under the **GNU General Public License v2.0**. 
+
+> "Free software is a matter of liberty, not price." — Richard Stallman
+
+You are free to use, study, share, and modify this software, as long as your modifications remain under the same license.

@@ -9,7 +9,7 @@ void rb_init(RingBuffer *rb) {
 }
 
 int rb_push(RingBuffer *rb, const uint8_t *data, size_t len) {
-    if (len > (RB_SIZE - rb->count)) return -1; // Overflow protection check
+    if (len > (RB_SIZE - rb->count)) return -1;
     for (size_t i = 0; i < len; i++) {
         rb->buffer[rb->head] = data[i];
         rb->head = (rb->head + 1) % RB_SIZE;
@@ -19,7 +19,7 @@ int rb_push(RingBuffer *rb, const uint8_t *data, size_t len) {
 }
 
 int rb_pop(RingBuffer *rb, uint8_t *out, size_t len) {
-    if (rb->count < len) return -1; // Underflow safety check
+    if (rb->count < len) return -1;
     for (size_t i = 0; i < len; i++) {
         out[i] = rb->buffer[rb->tail];
         rb->tail = (rb->tail + 1) % RB_SIZE;

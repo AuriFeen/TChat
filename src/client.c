@@ -13,7 +13,6 @@
 #include "network.h"
 #include "ring_buffer.h"
 
-// TUI State Definitions
 typedef enum { STATE_CHAT, STATE_SETTINGS } TuiMode;
 TuiMode current_mode = STATE_CHAT;
 
@@ -21,14 +20,13 @@ char current_input[MAX_MSG] = {0};
 size_t input_len = 0;
 pthread_mutex_t tui_lock = PTHREAD_MUTEX_INITIALIZER;
 
-// Runtime Configuration Settings Toggle Indicators
 int setting_timestamps = 1;
 int setting_notifications = 0;
 int selected_menu_item = 0;
 #define TOTAL_SETTINGS 3
 
 int global_sock = -1;
-char my_nickname[MAX_NICK] = {0}; // Track nickname locally for echo printing
+char my_nickname[MAX_NICK] = {0};
 
 #define C_RST   "\033[0m"
 #define C_PRMPT "\033[1;32m"
@@ -53,7 +51,6 @@ void enable_raw_mode() {
     tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw);
 }
 
-// Helper function to dynamically generate a clean timestamp string
 void get_current_timestamp(char *out_str, size_t max_len) {
     if (!setting_timestamps) {
         out_str[0] = '\0';
@@ -94,24 +91,6 @@ void tui_print(const char *formatted_msg) {
     pthread_mutex_unlock(&tui_lock);
 }
 
-void get_connection_info(int sock) {
-    struct sockaddr_in local_addr, peer_addr;
-    socklen_t local_len = sizeof(local_addr);
-    socklen_t peer_len = sizeof(peer_addr);
-    char local_ip[INET_ADDRSTRLEN], peer_ip[INET_ADDRSTRLEN];
-
-    getsockname(sock, (struct sockaddr*)&local_addr, &local_len);
-    getpeername(sock, (struct sockaddr*)&peer_addr, &peer_len);
-
-    inet_ntop(AF_INET, &local_addr.sin_addr, local_ip, sizeof(local_ip));
-    inet_ntop(AF_INET, &peer_addr.sin_addr, peer_ip, sizeof(peer_ip));
-
-    char output[256];
-    snprintf(output, sizeof(output), C_SRV "[Network Profile]\n | Link Bound Point: %s:%d\n | Remote Endpoint Target: %s:%d" C_RST,
-             local_ip, ntohs(local_addr.sin_port), peer_ip, ntohs(peer_addr.sin_port));
-    tui_print(output);
-}
-
 void* handle_server_messages(void* arg) {
     int sock = *(int*)arg;
     RingBuffer rb;
@@ -144,7 +123,7 @@ void* handle_server_messages(void* arg) {
             tui_print(buffer);
         }
     }
-    tui_print(C_SRV "[Critical Alert System Error] Remote operational core target lost connection parameters." C_RST);
+    tui_print(C_SRV "[Critical Alert] Lost connection to remote mesh node." C_RST);
     disable_raw_mode();
     exit(EXIT_FAILURE);
 }
@@ -152,9 +131,8 @@ void* handle_server_messages(void* arg) {
 int main() {
     printf("--- Welcome to TChat Global Overlay Mesh Framework ---\n");
     
-    // Prompt for target overlay address before starting up the client state
     char target_addr_str[256];
-    printf("Enter target overlay node address (e.g., NetBird/Tailscale IP or FQDN, default 127.0.0.1): ");
+    printf("Enter target overlay node address (default 127.0.0.1): ");
     if (!fgets(target_addr_str, sizeof(target_addr_str), stdin)) return 0;
     target_addr_str[strcspn(target_addr_str, "\n")] = 0;
 
@@ -164,7 +142,7 @@ int main() {
 
     int sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock < 0) {
-        perror("Socket allocation subsystem failure");
+        perror("Socket allocation failure");
         return 1;
     }
 
@@ -179,9 +157,9 @@ int main() {
         memcpy(&addr.sin_addr, he->h_addr_list[0], he->h_length);
     }
 
-    printf("Establishing secure transport connection to mesh endpoint [%s]...\n", target_addr_str);
+    printf("Connecting to mesh endpoint [%s]...\n", target_addr_str);
     if (connect(sock, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
-        perror("Network routing profile mapping infrastructure setup exception mapping error");
+        perror("Connection mapping failure");
         close(sock);
         return 1;
     }
@@ -198,8 +176,6 @@ int main() {
     strncpy(join_p.nickname, my_nickname, MAX_NICK - 1);
     net_send_packet(sock, TYPE_JOIN, &join_p);
 
-    printf("Dynamic binding active context configuration loaded. Engine initialized. Command triggers active.\n");
-    
     enable_raw_mode();
     pthread_t thread_id;
     pthread_create(&thread_id, NULL, handle_server_messages, (void*)&sock);
@@ -252,8 +228,6 @@ int main() {
                 
                 if (strcmp(current_input, "/exit") == 0) {
                     break;
-                } else if (strcmp(current_input, "/port") == 0) {
-                    get_connection_info(sock);
                 } else if (strcmp(current_input, "/settings") == 0) {
                     pthread_mutex_lock(&tui_lock);
                     current_mode = STATE_SETTINGS;
@@ -282,7 +256,7 @@ int main() {
                         snprintf(local_echo, sizeof(local_echo), C_PRIV "[PM to %s]" C_RST ": %s", target, msg);
                         printf("%s\n", local_echo);
                     } else {
-                        printf(C_SRV "[System] Syntax error format layout structure validation constraint violation matching /msg <user> <text>\n" C_RST);
+                        printf(C_SRV "[System] Invalid /msg syntax format.\n" C_RST);
                     }
                 } else {
                     TChatPayload p = {0};

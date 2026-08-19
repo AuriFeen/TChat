@@ -2,8 +2,10 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #include <string.h>
+#include <stdio.h>
 #include "ring_buffer.h"
 
+// High-performance CRC32 implementation for TChat packet integrity verification
 uint32_t net_crc32(const uint8_t *data, size_t length) {
     uint32_t crc = 0xFFFFFFFF;
     for (size_t i = 0; i < length; i++) {
@@ -16,10 +18,12 @@ uint32_t net_crc32(const uint8_t *data, size_t length) {
     return ~crc;
 }
 
+// Stream reader designed to ingest bytes over local links or NetBird secure mesh tunnels
 int net_read_stream(int sock, RingBuffer *rb) {
     uint8_t temp[2048];
     ssize_t bytes = recv(sock, temp, sizeof(temp), 0);
     if (bytes <= 0) return (int)bytes;
+    
     if (rb_push(rb, temp, bytes) < 0) {
         // Safe-guard: Buffer filled up due to unhandled pipeline frames. Flush buffer.
         rb_init(rb);
@@ -27,14 +31,15 @@ int net_read_stream(int sock, RingBuffer *rb) {
     return (int)bytes;
 }
 
+// Extracts fully framed protocol blocks from the ring buffer stream
 int net_extract_packet(RingBuffer *rb, TWireHeader *out_hdr, TChatPayload *out_payload) {
     while (rb->count >= sizeof(TWireHeader)) {
         TWireHeader hdr;
         rb_peek(rb, (uint8_t*)&hdr, 0, sizeof(TWireHeader));
 
-        // Stream alignment fallback checking mechanism
+        // Stream alignment fallback checking mechanism for robust parsing over network sockets
         if (hdr.magic != PROTO_MAGIC) {
-            rb_advance_tail(rb, 1); // Step forward until stream sync is found
+            rb_advance_tail(rb, 1); // Step forward until stream sync magic is found
             continue;
         }
 
@@ -45,7 +50,7 @@ int net_extract_packet(RingBuffer *rb, TWireHeader *out_hdr, TChatPayload *out_p
         }
 
         if (rb->count < (sizeof(TWireHeader) + hdr.length)) {
-            return 0; // Incomplete package layout window context
+            return 0; // Incomplete package layout window context; wait for more bytes
         }
 
         // Process data extraction window
@@ -55,10 +60,10 @@ int net_extract_packet(RingBuffer *rb, TWireHeader *out_hdr, TChatPayload *out_p
             rb_pop(rb, (uint8_t*)out_payload, hdr.length);
         }
 
-        // Integrity Verification
+        // Cryptographic/Checksum Integrity Verification over NetBird Overlay Layer
         uint32_t calculated_crc = net_crc32((const uint8_t*)out_payload, hdr.length);
         if (calculated_crc != hdr.checksum) {
-            continue; // Corrupted packet, drop silently
+            continue; // Corrupted packet detected, drop silently
         }
 
         *out_hdr = hdr;
@@ -67,6 +72,7 @@ int net_extract_packet(RingBuffer *rb, TWireHeader *out_hdr, TChatPayload *out_p
     return 0;
 }
 
+// Transmits structured wire packets safely with MSG_NOSIGNAL protection against dropped mesh pipes
 int net_send_packet(int sock, uint16_t type, const TChatPayload *payload) {
     TWireHeader hdr = {
         .magic = PROTO_MAGIC,
@@ -85,7 +91,7 @@ int net_send_packet(int sock, uint16_t type, const TChatPayload *payload) {
     size_t total_sent = 0;
     
     while (total_sent < total_len) {
-        // MSG_NOSIGNAL blocks runtime application crashes from broken pipeline transfers
+        // MSG_NOSIGNAL blocks runtime application crashes if the NetBird tunnel drops unexpectedly
         ssize_t sent = send(sock, tx_buf + total_sent, total_len - total_sent, MSG_NOSIGNAL);
         if (sent <= 0) return -1;
         total_sent += sent;

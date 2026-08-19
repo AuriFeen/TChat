@@ -4,8 +4,11 @@
 #include <unistd.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <arpa/inet.h>
+#include <ifaddrs.h>
+#include <net/if.h>
 #include <poll.h>
-
+#include <netdb.h>
 #include "protocol.h"
 #include "network.h"
 #include "ring_buffer.h"
@@ -20,7 +23,6 @@ typedef struct {
     RingBuffer rb;
 } UserSession;
 
-// Memory mapped runtime structure configuration allocations tracking space matrices
 UserSession users[MAX_FDS];
 struct pollfd fds[MAX_FDS];
 int nfds = 1;
@@ -56,9 +58,45 @@ void terminate_session(int index) {
     users[sock].active = 0;
     rb_init(&users[sock].rb);
 
-    // Compress allocation stack tracking arrays elements shifting operations offsets bounds
     fds[index] = fds[nfds - 1];
     nfds--;
+}
+
+// Function to inspect and print all available interface addresses (including NetBird/Tailscale) on launch
+void print_active_mesh_addresses(int port) {
+    struct ifaddrs *ifaddr, *ifa;
+    char host[NI_MAXHOST];
+
+    if (getifaddrs(&ifaddr) == -1) {
+        perror("getifaddrs failed");
+        return;
+    }
+
+    printf("\n========================================================\n");
+    printf(" TChat Global Mesh Server Interface Discovery Matrix    \n");
+    printf("========================================================\n");
+    
+    for (ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
+        if (ifa->ifa_addr == NULL) continue;
+
+        // Check for IPv4 addresses
+        if (ifa->ifa_addr->sa_family == AF_INET) {
+            int s = getnameinfo(ifa->ifa_addr, sizeof(struct sockaddr_in),
+                                host, NI_MAXHOST, NULL, 0, NI_NUMERICHOST);
+            if (s == 0) {
+                // Highlight common secure mesh / VPN interface prefixes if present
+                if (strncmp(ifa->ifa_name, "wt", 2) == 0 || strncmp(ifa->ifa_name, "netbird", 7) == 0 || strncmp(ifa->ifa_name, "ts", 2) == 0) {
+                    printf(" [MESH OVERLAY] Interface: %-10s -> IP Address: %s:%d (Use this!)\n", ifa->ifa_name, host, port);
+                } else if (strcmp(ifa->ifa_name, "lo") != 0) {
+                    printf(" [LOCAL/VPN]    Interface: %-10s -> IP Address: %s:%d\n", ifa->ifa_name, host, port);
+                } else {
+                    printf(" [LOOPBACK]     Interface: %-10s -> IP Address: %s:%d\n", ifa->ifa_name, host, port);
+                }
+            }
+        }
+    }
+    printf("========================================================\n\n");
+    freeifaddrs(ifaddr);
 }
 
 int main() {
@@ -78,6 +116,9 @@ int main() {
     fds[0].events = POLLIN;
 
     printf("TChat Overbuilt Secure Protocol Streaming Demultiplexer Engine Service Started on Bind Profile Matrix Port Point: %d\n", PORT);
+    
+    // Print available interface IPs so the user immediately knows what to feed into the client prompt
+    print_active_mesh_addresses(PORT);
 
     TWireHeader hdr;
     TChatPayload payload;
@@ -89,7 +130,7 @@ int main() {
         for (int i = 0; i < nfds; i++) {
             if (!(fds[i].revents & POLLIN)) continue;
 
-            if (fds[i].fd == server_fd) { // Acceptance Processing Matrix Allocation Pipelines Nodes
+            if (fds[i].fd == server_fd) { 
                 int new_sock = accept(server_fd, NULL, NULL);
                 if (new_sock >= MAX_FDS || nfds >= MAX_FDS) {
                     close(new_sock);
@@ -105,7 +146,7 @@ int main() {
                     nfds++;
                     printf("[System Layer Connection Core Kernel Log Metrics] Connection token registration linked into resource descriptor offset tracking index ID: (FD %d).\n", new_sock);
                 }
-            } else { // Stream data frame parsing ingestion logic loops routines branches
+            } else { 
                 int sock = fds[i].fd;
                 int bytes = net_read_stream(sock, &users[sock].rb);
 

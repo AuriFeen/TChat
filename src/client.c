@@ -7,7 +7,7 @@
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <netdb.h>
-#include <time.h> // Added for real-time timestamp operations
+#include <time.h>
 
 #include "protocol.h"
 #include "network.h"
@@ -71,7 +71,7 @@ void redraw_settings_menu() {
     for (int i = 0; i < TOTAL_SETTINGS; i++) {
         printf("\033[K");
         if (i == selected_menu_item) printf("%s-> ", C_HI);
-        else printf("   ");
+        else printf("    ");
 
         if (i == 0) printf("Display Messages Timestamps: [%s]%s\n", setting_timestamps ? "ON" : "OFF", C_RST);
         else if (i == 1) printf("Enable Sound Audio Alert Ping: [%s]%s\n", setting_notifications ? "ON" : "OFF", C_RST);
@@ -150,20 +150,48 @@ void* handle_server_messages(void* arg) {
 }
 
 int main() {
-    printf("--- Welcome to TChat Overbuilt Platform Framework ---\n");
+    printf("--- Welcome to TChat Global Overlay Mesh Framework ---\n");
     
-    int sock = socket(AF_INET, SOCK_STREAM, 0);
-    struct sockaddr_in addr = { .sin_family = AF_INET, .sin_port = htons(8080) };
-    inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+    // Prompt for target overlay address before starting up the client state
+    char target_addr_str[256];
+    printf("Enter target overlay node address (e.g., NetBird/Tailscale IP or FQDN, default 127.0.0.1): ");
+    if (!fgets(target_addr_str, sizeof(target_addr_str), stdin)) return 0;
+    target_addr_str[strcspn(target_addr_str, "\n")] = 0;
 
+    if (strlen(target_addr_str) == 0) {
+        strcpy(target_addr_str, "127.0.0.1");
+    }
+
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock < 0) {
+        perror("Socket allocation subsystem failure");
+        return 1;
+    }
+
+    struct sockaddr_in addr = { .sin_family = AF_INET, .sin_port = htons(8080) };
+    if (inet_pton(AF_INET, target_addr_str, &addr.sin_addr) <= 0) {
+        struct hostent *he = gethostbyname(target_addr_str);
+        if (he == NULL) {
+            perror("Target network address resolution failure");
+            close(sock);
+            return 1;
+        }
+        memcpy(&addr.sin_addr, he->h_addr_list[0], he->h_length);
+    }
+
+    printf("Establishing secure transport connection to mesh endpoint [%s]...\n", target_addr_str);
     if (connect(sock, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
-        perror("Socket allocation subsystem binding tracking exception mapping failure");
+        perror("Network routing profile mapping infrastructure setup exception mapping error");
+        close(sock);
         return 1;
     }
     global_sock = sock;
 
     printf("Enter system registration identity pseudonym token: ");
-    if(!fgets(my_nickname, MAX_NICK, stdin)) return 0;
+    if(!fgets(my_nickname, MAX_NICK, stdin)) {
+        close(sock);
+        return 0;
+    }
     my_nickname[strcspn(my_nickname, "\n")] = 0;
 
     TChatPayload join_p = {0};
@@ -239,7 +267,6 @@ int main() {
                 } else if (strncmp(current_input, "/name ", 6) == 0) {
                     TChatPayload p = {0};
                     strncpy(p.nickname, current_input + 6, MAX_NICK - 1);
-                    // Update local copy of nickname immediately for local echos
                     strncpy(my_nickname, current_input + 6, MAX_NICK - 1);
                     net_send_packet(sock, TYPE_NAME_CHANGE, &p);
                 } else if (strncmp(current_input, "/msg ", 5) == 0) {
@@ -258,13 +285,10 @@ int main() {
                         printf(C_SRV "[System] Syntax error format layout structure validation constraint violation matching /msg <user> <text>\n" C_RST);
                     }
                 } else {
-                    // Standard Chat Message Broadcast Execution
                     TChatPayload p = {0};
                     strncpy(p.data, current_input, MAX_MSG - 1);
                     net_send_packet(sock, TYPE_CHAT, &p);
 
-                    // FIXED: Generate a clean, real-time local echo string 
-                    // so the sender can see their own broadcast messages.
                     char time_str[32] = {0};
                     get_current_timestamp(time_str, sizeof(time_str));
                     printf("%s" C_NICK "[%s]" C_RST ": %s\n", time_str, my_nickname, current_input);

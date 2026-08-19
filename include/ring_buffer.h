@@ -1,10 +1,10 @@
 #ifndef RING_BUFFER_H
 #define RING_BUFFER_H
 
-#include <stdint.h>
 #include <stddef.h>
+#include <stdint.h>
 
-#define RB_SIZE 16384
+#define RB_SIZE 8192
 
 typedef struct {
     uint8_t buffer[RB_SIZE];

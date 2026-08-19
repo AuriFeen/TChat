@@ -1,9 +1,11 @@
+#include "tailscale.h"
 #include "network.h"
-#include <sys/socket.h>
-#include <unistd.h>
 #include <string.h>
 #include <stdio.h>
-#include "ring_buffer.h"
+#include <stdlib.h>
+#include <unistd.h>
+
+static tailscale ts_handle = 0;
 
 uint32_t net_crc32(const uint8_t *data, size_t length) {
     uint32_t crc = 0xFFFFFFFF;
@@ -17,18 +19,79 @@ uint32_t net_crc32(const uint8_t *data, size_t length) {
     return ~crc;
 }
 
-int net_read_stream(int sock, RingBuffer *rb) {
-    uint8_t temp[2048];
-    ssize_t bytes = recv(sock, temp, sizeof(temp), 0);
-    if (bytes <= 0) return (int)bytes;
+IrohEndpoint* iroh_net_init_node(const char *alpn_str) {
+    (void)alpn_str;
     
-    if (rb_push(rb, temp, bytes) < 0) {
-        rb_init(rb); // Flush ring buffer on hard overflow constraint violation
+    ts_handle = tailscale_new();
+    if (ts_handle <= 0) {
+        fprintf(stderr, "Failed to create tailscale context\n");
+        return NULL;
     }
-    return (int)bytes;
+
+    tailscale_set_control_url(ts_handle, "https://your-headscale.yourdomain.com");
+    tailscale_set_dir(ts_handle, "./tstate");
+
+    if (tailscale_start(ts_handle) != 0) {
+        fprintf(stderr, "Failed to start embedded tailscale node engine\n");
+        return NULL;
+    }
+
+    return (IrohEndpoint*)(intptr_t)ts_handle;
 }
 
-int net_extract_packet(RingBuffer *rb, TWireHeader *out_hdr, TChatPayload *out_payload) {
+char* iroh_net_get_node_id_str(IrohEndpoint *endpoint) {
+    (void)endpoint;
+    char ip_buf[128];
+    snprintf(ip_buf, sizeof(ip_buf), "100.64.0.1"); 
+    return strdup(ip_buf);
+}
+
+IrohConnection* iroh_net_accept(IrohEndpoint *endpoint) {
+    (void)endpoint;
+    tailscale_listener listener = 0;
+    
+    if (tailscale_listen(ts_handle, "tcp", "0.0.0.0:7777", &listener) != 0 || listener <= 0) {
+        return NULL;
+    }
+
+    tailscale_conn conn = 0;
+    if (tailscale_accept(listener, &conn) != 0 || conn <= 0) {
+        tailscale_close(listener);
+        return NULL;
+    }
+    
+    tailscale_close(listener);
+    return (IrohConnection*)(intptr_t)conn;
+}
+
+IrohConnection* iroh_net_connect(IrohEndpoint *endpoint, const char *node_id_str) {
+    (void)endpoint;
+    char target_addr[128];
+    snprintf(target_addr, sizeof(target_addr), "%s:7777", node_id_str);
+
+    tailscale_conn conn = 0;
+    if (tailscale_dial(ts_handle, "tcp", target_addr, &conn) != 0 || conn <= 0) {
+        return NULL;
+    }
+    return (IrohConnection*)(intptr_t)conn;
+}
+
+int iroh_net_read_stream(IrohConnection *conn, RingBuffer *rb) {
+    tailscale_conn c = (tailscale_conn)(intptr_t)conn;
+    uint8_t temp[2048];
+    
+    int read_bytes = read(c, temp, sizeof(temp));
+    if (read_bytes <= 0) {
+        return -1;
+    }
+    
+    if (rb_push(rb, temp, (size_t)read_bytes) < 0) {
+        rb_init(rb);
+    }
+    return read_bytes;
+}
+
+int iroh_net_extract_packet(RingBuffer *rb, TWireHeader *out_hdr, TChatPayload *out_payload) {
     while (rb->count >= sizeof(TWireHeader)) {
         TWireHeader hdr;
         rb_peek(rb, (uint8_t*)&hdr, 0, sizeof(TWireHeader));
@@ -44,7 +107,7 @@ int net_extract_packet(RingBuffer *rb, TWireHeader *out_hdr, TChatPayload *out_p
         }
 
         if (rb->count < (sizeof(TWireHeader) + hdr.length)) {
-            return 0; // Wait for missing stream bytes
+            return 0; 
         }
 
         rb_advance_tail(rb, sizeof(TWireHeader));
@@ -55,7 +118,7 @@ int net_extract_packet(RingBuffer *rb, TWireHeader *out_hdr, TChatPayload *out_p
 
         uint32_t calculated_crc = net_crc32((const uint8_t*)out_payload, hdr.length);
         if (calculated_crc != hdr.checksum) {
-            continue; // Drop corrupt packet silently
+            continue; 
         }
 
         *out_hdr = hdr;
@@ -64,7 +127,8 @@ int net_extract_packet(RingBuffer *rb, TWireHeader *out_hdr, TChatPayload *out_p
     return 0;
 }
 
-int net_send_packet(int sock, uint16_t type, const TChatPayload *payload) {
+int iroh_net_send_packet(IrohConnection *conn, uint16_t type, const TChatPayload *payload) {
+    tailscale_conn c = (tailscale_conn)(intptr_t)conn;
     TWireHeader hdr = {
         .magic = PROTO_MAGIC,
         .type = type,
@@ -79,12 +143,15 @@ int net_send_packet(int sock, uint16_t type, const TChatPayload *payload) {
     }
 
     size_t total_len = sizeof(TWireHeader) + hdr.length;
-    size_t total_sent = 0;
+    int written = write(c, tx_buf, total_len);
+    if (written < 0) return -1;
     
-    while (total_sent < total_len) {
-        ssize_t sent = send(sock, tx_buf + total_sent, total_len - total_sent, MSG_NOSIGNAL);
-        if (sent <= 0) return -1;
-        total_sent += sent;
+    return written;
+}
+
+void iroh_net_close(IrohConnection *conn) {
+    if (conn) {
+        tailscale_conn c = (tailscale_conn)(intptr_t)conn;
+        tailscale_close(c);
     }
-    return (int)total_sent;
 }

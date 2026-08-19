@@ -1,6 +1,6 @@
 CC = gcc
 CFLAGS = -Wall -Wextra -Iinclude -pthread -g
-LDFLAGS = -pthread
+LDFLAGS = libtailscale.a -lpthread -ldl -lm
 
 # Folders
 SRC_DIR = src
@@ -23,11 +23,11 @@ $(BIN_DIR)/server: $(SRC_DIR)/server.o $(SRC_DIR)/network.o $(SRC_DIR)/ring_buff
 	$(CC) $^ -o $@ $(LDFLAGS)
 
 # Link Client
-$(BIN_DIR)/client: $(SRC_DIR)/client.c $(SRC_DIR)/network.o $(SRC_DIR)/ring_buffer.o
+$(BIN_DIR)/client: $(SRC_DIR)/client.o $(SRC_DIR)/network.o $(SRC_DIR)/ring_buffer.o
 	@mkdir -p $(BIN_DIR)
-	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
+	$(CC) $^ -o $@ $(LDFLAGS)
 
-# Compile Source Files - now depends on HEADERS
+# Compile Source Files
 $(SRC_DIR)/%.o: $(SRC_DIR)/%.c $(HEADERS)
 	$(CC) $(CFLAGS) -c $< -o $@
 

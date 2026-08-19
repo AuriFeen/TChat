@@ -4,9 +4,6 @@
 #include <unistd.h>
 #include <pthread.h>
 #include <termios.h>
-#include <arpa/inet.h>
-#include <sys/socket.h>
-#include <netdb.h>
 #include <time.h>
 
 #include "protocol.h"
@@ -25,7 +22,7 @@ int setting_notifications = 0;
 int selected_menu_item = 0;
 #define TOTAL_SETTINGS 3
 
-int global_sock = -1;
+IrohConnection *global_conn = NULL;
 char my_nickname[MAX_NICK] = {0};
 
 #define C_RST   "\033[0m"
@@ -92,7 +89,7 @@ void tui_print(const char *formatted_msg) {
 }
 
 void* handle_server_messages(void* arg) {
-    int sock = *(int*)arg;
+    IrohConnection *conn = (IrohConnection*)arg;
     RingBuffer rb;
     rb_init(&rb);
 
@@ -100,9 +97,9 @@ void* handle_server_messages(void* arg) {
     TChatPayload payload;
 
     while (1) {
-        if (net_read_stream(sock, &rb) <= 0) break;
+        if (iroh_net_read_stream(conn, &rb) <= 0) break;
 
-        while (net_extract_packet(&rb, &hdr, &payload)) {
+        while (iroh_net_extract_packet(&rb, &hdr, &payload)) {
             char buffer[1024];
             char time_str[32] = {0};
             get_current_timestamp(time_str, sizeof(time_str));
@@ -129,56 +126,46 @@ void* handle_server_messages(void* arg) {
 }
 
 int main() {
-    printf("--- Welcome to TChat Global Overlay Mesh Framework ---\n");
+    printf("--- Welcome to TChat Global Overlay Mesh Framework (Iroh P2P) ---\n");
     
-    char target_addr_str[256];
-    printf("Enter target overlay node address (default 127.0.0.1): ");
-    if (!fgets(target_addr_str, sizeof(target_addr_str), stdin)) return 0;
-    target_addr_str[strcspn(target_addr_str, "\n")] = 0;
+    char node_id_str[512];
+    printf("Enter target server Iroh Node ID: ");
+    if (!fgets(node_id_str, sizeof(node_id_str), stdin)) return 0;
+    node_id_str[strcspn(node_id_str, "\n")] = 0;
 
-    if (strlen(target_addr_str) == 0) {
-        strcpy(target_addr_str, "127.0.0.1");
-    }
-
-    int sock = socket(AF_INET, SOCK_STREAM, 0);
-    if (sock < 0) {
-        perror("Socket allocation failure");
+    if (strlen(node_id_str) == 0) {
+        fprintf(stderr, "Error: Node ID cannot be empty.\n");
         return 1;
     }
 
-    struct sockaddr_in addr = { .sin_family = AF_INET, .sin_port = htons(8080) };
-    if (inet_pton(AF_INET, target_addr_str, &addr.sin_addr) <= 0) {
-        struct hostent *he = gethostbyname(target_addr_str);
-        if (he == NULL) {
-            perror("Target network address resolution failure");
-            close(sock);
-            return 1;
-        }
-        memcpy(&addr.sin_addr, he->h_addr_list[0], he->h_length);
-    }
-
-    printf("Connecting to mesh endpoint [%s]...\n", target_addr_str);
-    if (connect(sock, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
-        perror("Connection mapping failure");
-        close(sock);
+    IrohEndpoint *endpoint = iroh_net_init_node(TCHAT_ALPN);
+    if (!endpoint) {
+        fprintf(stderr, "Failed to initialize client local Iroh endpoint.\n");
         return 1;
     }
-    global_sock = sock;
+
+    printf("Dialing server via P2P QUIC hole-punching...\n");
+    IrohConnection *conn = iroh_net_connect(endpoint, node_id_str);
+    if (!conn) {
+        fprintf(stderr, "Connection failure to target Iroh Node ID.\n");
+        return 1;
+    }
+    global_conn = conn;
 
     printf("Enter system registration identity pseudonym token: ");
-    if(!fgets(my_nickname, MAX_NICK, stdin)) {
-        close(sock);
+    if (!fgets(my_nickname, MAX_NICK, stdin)) {
+        iroh_net_close(conn);
         return 0;
     }
     my_nickname[strcspn(my_nickname, "\n")] = 0;
 
     TChatPayload join_p = {0};
     strncpy(join_p.nickname, my_nickname, MAX_NICK - 1);
-    net_send_packet(sock, TYPE_JOIN, &join_p);
+    iroh_net_send_packet(conn, TYPE_JOIN, &join_p);
 
     enable_raw_mode();
     pthread_t thread_id;
-    pthread_create(&thread_id, NULL, handle_server_messages, (void*)&sock);
+    pthread_create(&thread_id, NULL, handle_server_messages, (void*)conn);
 
     printf(C_PRMPT "> " C_RST);
     fflush(stdout);
@@ -237,12 +224,12 @@ int main() {
                     pthread_mutex_unlock(&tui_lock);
                     continue;
                 } else if (strcmp(current_input, "/users") == 0) {
-                    net_send_packet(sock, TYPE_CMD_USERS, NULL);
+                    iroh_net_send_packet(conn, TYPE_CMD_USERS, NULL);
                 } else if (strncmp(current_input, "/name ", 6) == 0) {
                     TChatPayload p = {0};
                     strncpy(p.nickname, current_input + 6, MAX_NICK - 1);
                     strncpy(my_nickname, current_input + 6, MAX_NICK - 1);
-                    net_send_packet(sock, TYPE_NAME_CHANGE, &p);
+                    iroh_net_send_packet(conn, TYPE_NAME_CHANGE, &p);
                 } else if (strncmp(current_input, "/msg ", 5) == 0) {
                     char *target = strtok(current_input + 5, " ");
                     char *msg = strtok(NULL, "");
@@ -250,7 +237,7 @@ int main() {
                         TChatPayload p = {0};
                         strncpy(p.target, target, MAX_NICK - 1);
                         strncpy(p.data, msg, MAX_MSG - 1);
-                        net_send_packet(sock, TYPE_PRIVATE, &p);
+                        iroh_net_send_packet(conn, TYPE_PRIVATE, &p);
 
                         char local_echo[1024];
                         snprintf(local_echo, sizeof(local_echo), C_PRIV "[PM to %s]" C_RST ": %s", target, msg);
@@ -261,7 +248,7 @@ int main() {
                 } else {
                     TChatPayload p = {0};
                     strncpy(p.data, current_input, MAX_MSG - 1);
-                    net_send_packet(sock, TYPE_CHAT, &p);
+                    iroh_net_send_packet(conn, TYPE_CHAT, &p);
 
                     char time_str[32] = {0};
                     get_current_timestamp(time_str, sizeof(time_str));
@@ -290,6 +277,6 @@ int main() {
     }
 
     disable_raw_mode();
-    close(sock);
+    iroh_net_close(conn);
     return 0;
 }

@@ -1,72 +1,160 @@
-# TChat - Multi-User C Chat System
+# TChat
 
-TChat is a high-performance, asynchronous chat application written in **Pure C** for Linux systems. It utilizes I/O multiplexing via `poll()` to handle multiple client connections in a single server thread, and POSIX threads on the client-side for a responsive TUI (Text User Interface).
+**Pure C. No dependencies. No Docker. No npm install. Just `make` and talk.**
 
-## 🚀 Features
-* **Asynchronous I/O:** Uses `poll()` for efficient socket management.
-* **Multi-Client Support:** Handles multiple simultaneous connections.
-* **Identity System:** Nickname registration and broadcast tagging.
-* **Multithreaded Client:** Background listener thread allows receiving messages while typing.
-* **TUI Polish:** ANSI escape codes for colored terminal output and prompt management.
+TChat is a self-hosted terminal chat server and client built from scratch in C. It runs on a $5 Pi, a decade-old laptop, or whatever Debian box you have collecting dust in the closet. Your computer *is* the server. Your friends connect directly to your IP. That's it.
 
 ---
 
-## 🛠 Project Structure
-* `src/`: Core logic for `server.c` and `client.c`.
-* `include/`: Shared protocol headers and definitions.
-* `bin/`: Compiled binary executables.
-* `Makefile`: Automated build system with dependency tracking.
+## What It Actually Does
+
+- **Host a chat room** on any Linux machine.
+- **Connect from anywhere** on the same network instantly.
+- **Connect from the internet** with one port forward (or UPnP if your router isn't garbage).
+- **Human-readable aliases** — no more memorizing `46.190.121.120:51343`. Your friend types `rustbucket` and the config resolves it.
+- **Private messages**, user lists, timestamps, and a settings dashboard inside the terminal.
+- **STUN discovery** — the server tells you your public IP automatically. No `whatismyip.com` tab required.
 
 ---
 
-## 🏗 Installation & Building
+## Features
 
-### Prerequisites
-* A Linux environment (Optimized for Arch Linux).
-* `gcc` (GNU Compiler Collection).
-* `make`.
+| Feature | What It Means |
+|---|---|
+| `poll()`-based server | One thread, many clients. No pthread explosion on the server side. |
+| POSIX threaded client | Background listener thread so you can type while messages arrive. |
+| Raw TCP sockets | No HTTP bloat, no WebSocket handshakes, no TLS certificate hell. |
+| STUN integration | Asks Google/Cloudflare "what's my public IP?" so you know what to give your friend. |
+| UPnP auto-mapping | Server politely asks your router to open port 7777. Works on most home networks. |
+| `.conf` aliases | Map `rustbucket = 203.0.113.45:7777` in `tchat_client.conf`. Type `rustbucket` at the prompt. |
+| Terminal UI | ANSI colors, non-blocking input, settings menu navigable with arrow keys. |
+| Zero dependencies | `gcc`, `make`, `libc`. That's the entire dependency tree. Binary is under 100KB. |
+| No Iroh, no Tailscale, no VPS | We are not shipping a 40MB statically-linked Go binary to do what `socket()` already does. |
 
-### Build Instructions
-To compile the entire project, navigate to the root directory and run:
+---
+
+## Build
 
 ```bash
-make all
+git clone <this-repo>
+cd TChat
+make
 ```
-🖥 How to Use
-1. Start the Server
 
-Run the server first to begin listening for incoming connections:
-Bash
+Requires: `gcc`, `make`, standard Linux headers. Nothing else.
+
+---
+
+## Quick Start
+
+### 1. Start the Server
+
 ```bash
 ./bin/server
 ```
-2. Connect Clients
 
-Open new terminal windows for each user and run:
+Output:
+```
+========================================================
+ TChat Server
+ Alias: rustbucket
+ Public Endpoint: 46.190.121.120:7777
+ Give your friend:  46.190.121.120:7777
+ Listening on port: 7777
+========================================================
+```
+
+If you see a `[UPnP] Mapped...` line, your router opened the port automatically. If not, forward TCP port 7777 to your server's local IP and you're done.
+
+Create `tchat_server.conf` to customize:
+
+```ini
+[server]
+alias = rustbucket
+port = 7777
+stun_host = stun.l.google.com
+stun_port = 19302
+upnp = true
+```
+
+### 2. Connect a Client
+
+On the same machine, another machine on your LAN, or across the internet:
 
 ```bash
 ./bin/client
 ```
-Select 1 to connect.
 
-Enter your desired nickname.
+```
+--- Welcome to TChat Global Overlay Mesh Framework ---
+Enter target server address or alias: 192.168.1.147:7777
+Connecting to 192.168.1.147:7777 ...
+Enter system registration identity pseudonym token: auri
+[22:33:04] [System Header] auri entered the secure channel.
+> hello
+[22:33:12] [auri]: hello
+```
 
-Start chatting! Use /exit to quit.
+Create `tchat_client.conf` to save aliases:
 
-🧠 Technical Overview
-The Protocol
+```ini
+[peers]
+rustbucket = 46.190.121.120:7777
+homelab    = 192.168.1.147:7777
+```
 
-TChat uses a fixed-size struct protocol defined in protocol.h. This ensures that both the server and client interpret the byte-stream identically.
-I/O Strategy
+Then just type `rustbucket` or `homelab` at the prompt.
 
-Unlike basic chat apps that spawn a new thread for every user (which is heavy), the TChat Server uses a single-threaded poll() loop. This monitors all file descriptors (FDs) and only triggers logic when data is actually ready to be read.
-TUI Management
+---
 
-The client uses carriage returns (\r) and ANSI escape codes to ensure that incoming messages don't break the user's current input line, providing a smooth CLI experience.
+## Client Commands
 
-## ⚖️ License
-This project is licensed under the **GNU General Public License v2.0**. 
+| Command | Action |
+|---|---|
+| `/exit` | Disconnect and quit. |
+| `/settings` | Open the TUI configuration dashboard (timestamps, notification pings). |
+| `/users` | Request the active user list from the server. |
+| `/name <newname>` | Change your nickname. |
+| `/msg <user> <text>` | Send a private message. |
 
-> "Free software is a matter of liberty, not price." — Richard Stallman
+---
 
-You are free to use, study, share, and modify this software, as long as your modifications remain under the same license.
+## Architecture
+
+```
+┌─────────────┐         TCP 7777          ┌─────────────┐
+│   Server    │ <-----------------------> │   Client    │
+│  (poll())   │    TWireHeader + Payload  │  (pthread)  │
+└─────────────┘                           └─────────────┘
+      │
+      └── STUN query to discover public IP
+      └── UPnP request to auto-open router port
+```
+
+- **Protocol**: Fixed-size binary header (`TWireHeader`) + payload (`TChatPayload`). CRC32 checksum. No JSON, no XML, no protobuf.
+- **Server**: Single-threaded `poll()` loop. Accepts connections, buffers partial packets in per-client ring buffers, broadcasts chat messages.
+- **Client**: Main thread handles raw terminal input. Background thread blocks on `recv()` and prints formatted messages without destroying your input line.
+
+---
+
+## The Honest Limitations
+
+| Scenario | Result |
+|---|---|
+| Same LAN / WiFi | Works instantly. Zero config. |
+| UPnP enabled router | Works over internet automatically. |
+| Manual port forward | Works over internet with 30 seconds of router admin panel pain. |
+| CGNAT / Symmetric NAT (mobile hotspot, university, Starlink) | **Will not work without a relay/VPS.** No C program can defeat math. |
+| Windows | Untested. WSL probably works. Cygwin is your own fault. |
+
+---
+
+## Why Not Just Use Discord / IRC / Matrix?
+
+Because this is yours. No terms of service. no data mining, no electron app eating 400MB of RAM to display text. You run the binary, you own the conversation, you pull the plug when you're done.
+
+It's the same reason Minecraft multiplayer blew up in 2010: anyone could run a server, give their friends an IP, and play. TChat is that, but for talking shit in a terminal.
+
+---
+
+## License

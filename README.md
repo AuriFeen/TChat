@@ -36,7 +36,7 @@ TChat is a self-hosted terminal chat server and client built from scratch in C. 
 ## Build
 
 ```bash
-git clone <this-repo>
+git clone https://github.com/AuriFeen/TChat.git
 cd TChat
 make
 ```

@@ -154,7 +154,3 @@ Then just type `rustbucket` or `homelab` at the prompt.
 Because this is yours. No terms of service. no data mining, no electron app eating 400MB of RAM to display text. You run the binary, you own the conversation, you pull the plug when you're done.
 
 It's the same reason Minecraft multiplayer blew up in 2010: anyone could run a server, give their friends an IP, and play. TChat is that, but for talking shit in a terminal.
-
----
-
-## License

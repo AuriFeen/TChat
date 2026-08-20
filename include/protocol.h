@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#define PROTO_MAGIC 0x54434841 // "TCHA" in ASCII
+#define PROTO_MAGIC 0x54434841 // "TCHA"
 #define TCHAT_ALPN  "tchat/p2p-mesh/1.0"
 #define MAX_NICK    32
 #define MAX_MSG     512

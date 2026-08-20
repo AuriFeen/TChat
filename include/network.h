@@ -6,13 +6,13 @@
 #include "protocol.h"
 #include "ring_buffer.h"
 
-// Opaque types mapped to iroh-c-ffi constructs
 typedef struct IrohEndpoint IrohEndpoint;
 typedef struct IrohConnection IrohConnection;
 
 uint32_t net_crc32(const uint8_t *data, size_t length);
 
-IrohEndpoint* iroh_net_init_node(const char *alpn_str);
+/* listen_port: 0 for client (no bind), >0 for server */
+IrohEndpoint* iroh_net_init_node(int listen_port);
 char* iroh_net_get_node_id_str(IrohEndpoint *endpoint);
 IrohConnection* iroh_net_accept(IrohEndpoint *endpoint);
 IrohConnection* iroh_net_connect(IrohEndpoint *endpoint, const char *node_id_str);

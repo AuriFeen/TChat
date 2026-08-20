@@ -1,11 +1,13 @@
-#include "tailscale.h"
 #include "network.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
-
-static tailscale ts_handle = 0;
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <netdb.h>
+#include <errno.h>
 
 uint32_t net_crc32(const uint8_t *data, size_t length) {
     uint32_t crc = 0xFFFFFFFF;
@@ -19,76 +21,92 @@ uint32_t net_crc32(const uint8_t *data, size_t length) {
     return ~crc;
 }
 
-IrohEndpoint* iroh_net_init_node(const char *alpn_str) {
-    (void)alpn_str;
-    
-    ts_handle = tailscale_new();
-    if (ts_handle <= 0) {
-        fprintf(stderr, "Failed to create tailscale context\n");
-        return NULL;
+struct IrohEndpoint {
+    int listen_fd;
+    int is_server;
+};
+
+IrohEndpoint* iroh_net_init_node(int listen_port) {
+    struct IrohEndpoint *ctx = calloc(1, sizeof(struct IrohEndpoint));
+    if (!ctx) return NULL;
+
+    if (listen_port > 0) {
+        int fd = socket(AF_INET, SOCK_STREAM, 0);
+        if (fd < 0) { free(ctx); return NULL; }
+
+        int opt = 1;
+        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+
+        struct sockaddr_in addr = {0};
+        addr.sin_family = AF_INET;
+        addr.sin_addr.s_addr = INADDR_ANY;
+        addr.sin_port = htons(listen_port);
+
+        if (bind(fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+            perror("bind");
+            close(fd); free(ctx); return NULL;
+        }
+        if (listen(fd, 128) < 0) {
+            perror("listen");
+            close(fd); free(ctx); return NULL;
+        }
+        ctx->listen_fd = fd;
+        ctx->is_server = 1;
     }
-
-    tailscale_set_control_url(ts_handle, "https://your-headscale.yourdomain.com");
-    tailscale_set_dir(ts_handle, "./tstate");
-
-    if (tailscale_start(ts_handle) != 0) {
-        fprintf(stderr, "Failed to start embedded tailscale node engine\n");
-        return NULL;
-    }
-
-    return (IrohEndpoint*)(intptr_t)ts_handle;
+    return ctx;
 }
 
 char* iroh_net_get_node_id_str(IrohEndpoint *endpoint) {
     (void)endpoint;
-    char ip_buf[128];
-    snprintf(ip_buf, sizeof(ip_buf), "100.64.0.1"); 
-    return strdup(ip_buf);
+    return strdup("tchat-node");
 }
 
 IrohConnection* iroh_net_accept(IrohEndpoint *endpoint) {
-    (void)endpoint;
-    tailscale_listener listener = 0;
-    
-    if (tailscale_listen(ts_handle, "tcp", "0.0.0.0:7777", &listener) != 0 || listener <= 0) {
-        return NULL;
-    }
-
-    tailscale_conn conn = 0;
-    if (tailscale_accept(listener, &conn) != 0 || conn <= 0) {
-        tailscale_close(listener);
-        return NULL;
-    }
-    
-    tailscale_close(listener);
-    return (IrohConnection*)(intptr_t)conn;
+    if (!endpoint || !endpoint->is_server) return NULL;
+    struct sockaddr_in c;
+    socklen_t l = sizeof(c);
+    int fd = accept(endpoint->listen_fd, (struct sockaddr*)&c, &l);
+    return (fd < 0) ? NULL : (IrohConnection*)(intptr_t)fd;
 }
 
 IrohConnection* iroh_net_connect(IrohEndpoint *endpoint, const char *node_id_str) {
     (void)endpoint;
-    char target_addr[128];
-    snprintf(target_addr, sizeof(target_addr), "%s:7777", node_id_str);
+    char ip[128] = {0};
+    int port = 7777;
 
-    tailscale_conn conn = 0;
-    if (tailscale_dial(ts_handle, "tcp", target_addr, &conn) != 0 || conn <= 0) {
-        return NULL;
+    strncpy(ip, node_id_str, sizeof(ip)-1);
+    char *colon = strrchr(ip, ':');
+    if (colon) {
+        *colon = '\0';
+        port = atoi(colon+1);
     }
-    return (IrohConnection*)(intptr_t)conn;
+
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return NULL;
+
+    struct sockaddr_in addr = {0};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+
+    if (inet_pton(AF_INET, ip, &addr.sin_addr) <= 0) {
+        struct hostent *h = gethostbyname(ip);
+        if (!h) { close(fd); return NULL; }
+        memcpy(&addr.sin_addr, h->h_addr_list[0], h->h_length);
+    }
+
+    if (connect(fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+        close(fd); return NULL;
+    }
+    return (IrohConnection*)(intptr_t)fd;
 }
 
 int iroh_net_read_stream(IrohConnection *conn, RingBuffer *rb) {
-    tailscale_conn c = (tailscale_conn)(intptr_t)conn;
-    uint8_t temp[2048];
-    
-    int read_bytes = read(c, temp, sizeof(temp));
-    if (read_bytes <= 0) {
-        return -1;
-    }
-    
-    if (rb_push(rb, temp, (size_t)read_bytes) < 0) {
-        rb_init(rb);
-    }
-    return read_bytes;
+    int fd = (int)(intptr_t)conn;
+    uint8_t tmp[2048];
+    int n = read(fd, tmp, sizeof(tmp));
+    if (n <= 0) return -1;
+    if (rb_push(rb, tmp, (size_t)n) < 0) rb_init(rb);
+    return n;
 }
 
 int iroh_net_extract_packet(RingBuffer *rb, TWireHeader *out_hdr, TChatPayload *out_payload) {
@@ -96,31 +114,15 @@ int iroh_net_extract_packet(RingBuffer *rb, TWireHeader *out_hdr, TChatPayload *
         TWireHeader hdr;
         rb_peek(rb, (uint8_t*)&hdr, 0, sizeof(TWireHeader));
 
-        if (hdr.magic != PROTO_MAGIC) {
-            rb_advance_tail(rb, 1);
-            continue;
-        }
-
-        if (hdr.length > sizeof(TChatPayload)) {
-            rb_advance_tail(rb, sizeof(TWireHeader));
-            continue;
-        }
-
-        if (rb->count < (sizeof(TWireHeader) + hdr.length)) {
-            return 0; 
-        }
+        if (hdr.magic != PROTO_MAGIC) { rb_advance_tail(rb, 1); continue; }
+        if (hdr.length > sizeof(TChatPayload)) { rb_advance_tail(rb, sizeof(TWireHeader)); continue; }
+        if (rb->count < sizeof(TWireHeader) + hdr.length) return 0;
 
         rb_advance_tail(rb, sizeof(TWireHeader));
         memset(out_payload, 0, sizeof(TChatPayload));
-        if (hdr.length > 0) {
-            rb_pop(rb, (uint8_t*)out_payload, hdr.length);
-        }
+        if (hdr.length > 0) rb_pop(rb, (uint8_t*)out_payload, hdr.length);
 
-        uint32_t calculated_crc = net_crc32((const uint8_t*)out_payload, hdr.length);
-        if (calculated_crc != hdr.checksum) {
-            continue; 
-        }
-
+        if (net_crc32((const uint8_t*)out_payload, hdr.length) != hdr.checksum) continue;
         *out_hdr = hdr;
         return 1;
     }
@@ -128,30 +130,23 @@ int iroh_net_extract_packet(RingBuffer *rb, TWireHeader *out_hdr, TChatPayload *
 }
 
 int iroh_net_send_packet(IrohConnection *conn, uint16_t type, const TChatPayload *payload) {
-    tailscale_conn c = (tailscale_conn)(intptr_t)conn;
+    int fd = (int)(intptr_t)conn;
     TWireHeader hdr = {
         .magic = PROTO_MAGIC,
         .type = type,
         .length = payload ? sizeof(TChatPayload) : 0,
         .checksum = payload ? net_crc32((const uint8_t*)payload, sizeof(TChatPayload)) : 0
     };
+    uint8_t buf[sizeof(TWireHeader) + sizeof(TChatPayload)];
+    memcpy(buf, &hdr, sizeof(TWireHeader));
+    if (payload) memcpy(buf + sizeof(TWireHeader), payload, sizeof(TChatPayload));
 
-    uint8_t tx_buf[sizeof(TWireHeader) + sizeof(TChatPayload)];
-    memcpy(tx_buf, &hdr, sizeof(TWireHeader));
-    if (payload) {
-        memcpy(tx_buf + sizeof(TWireHeader), payload, sizeof(TChatPayload));
-    }
-
-    size_t total_len = sizeof(TWireHeader) + hdr.length;
-    int written = write(c, tx_buf, total_len);
-    if (written < 0) return -1;
-    
-    return written;
+    size_t total = sizeof(TWireHeader) + hdr.length;
+    int w = write(fd, buf, total);
+    return (w < 0) ? -1 : w;
 }
 
 void iroh_net_close(IrohConnection *conn) {
-    if (conn) {
-        tailscale_conn c = (tailscale_conn)(intptr_t)conn;
-        tailscale_close(c);
-    }
+    int fd = (int)(intptr_t)conn;
+    if (fd > 0) close(fd);
 }

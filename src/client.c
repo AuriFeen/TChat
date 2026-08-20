@@ -9,6 +9,7 @@
 #include "protocol.h"
 #include "network.h"
 #include "ring_buffer.h"
+#include "config.h"
 
 typedef enum { STATE_CHAT, STATE_SETTINGS } TuiMode;
 TuiMode current_mode = STATE_CHAT;
@@ -30,7 +31,7 @@ char my_nickname[MAX_NICK] = {0};
 #define C_SRV   "\033[1;33m"
 #define C_PRIV  "\033[1;35m"
 #define C_NICK  "\033[1;36m"
-#define C_HI    "\033[1;7m" 
+#define C_HI    "\033[1;7m"
 
 struct termios orig_termios;
 
@@ -72,7 +73,7 @@ void redraw_settings_menu() {
         else if (i == 2) printf("Exit Configuration Dashboard Menu%s\n", C_RST);
     }
     printf("\033[K(Navigate via Up/Down Arrows, Change/Execute with Space/Enter)\n");
-    printf("\033[%dA", TOTAL_SETTINGS + 2); 
+    printf("\033[%dA", TOTAL_SETTINGS + 2);
     fflush(stdout);
 }
 
@@ -111,11 +112,11 @@ void* handle_server_messages(void* arg) {
             } else if (hdr.type == TYPE_PRIVATE) {
                 snprintf(buffer, sizeof(buffer), "%s" C_PRIV "[PM From %s]" C_RST ": %s", time_str, payload.nickname, payload.data);
             } else if (hdr.type == TYPE_PONG) {
-                continue; 
+                continue;
             }
-            
+
             if (setting_notifications && hdr.type == TYPE_PRIVATE) {
-                printf("\a"); 
+                printf("\a");
             }
             tui_print(buffer);
         }
@@ -126,28 +127,47 @@ void* handle_server_messages(void* arg) {
 }
 
 int main() {
-    printf("--- Welcome to TChat Global Overlay Mesh Framework (Iroh P2P) ---\n");
-    
+    ClientConfig client_cfg;
+    int has_cfg = (config_load_client("tchat_client.conf", &client_cfg) == 0);
+
+    printf("--- Welcome to TChat Global Overlay Mesh Framework ---\n");
+    if (has_cfg && client_cfg.count > 0) {
+        printf("Saved peers from tchat_client.conf:\n");
+        for (int i = 0; i < client_cfg.count; i++) {
+            printf("  %-20s -> %s:%d\n",
+                   client_cfg.peers[i].name,
+                   client_cfg.peers[i].host,
+                   client_cfg.peers[i].port);
+        }
+    }
+
     char node_id_str[512];
-    printf("Enter target server Iroh Node ID: ");
+    printf("Enter target server address or alias: ");
     if (!fgets(node_id_str, sizeof(node_id_str), stdin)) return 0;
     node_id_str[strcspn(node_id_str, "\n")] = 0;
 
+    char resolved_host[128];
+    int resolved_port;
+    if (has_cfg && config_resolve_peer(&client_cfg, node_id_str, resolved_host, &resolved_port) == 0) {
+        snprintf(node_id_str, sizeof(node_id_str), "%s:%d", resolved_host, resolved_port);
+        printf("[Config] Resolved alias to %s\n", node_id_str);
+    }
+
     if (strlen(node_id_str) == 0) {
-        fprintf(stderr, "Error: Node ID cannot be empty.\n");
+        fprintf(stderr, "Error: Target cannot be empty.\n");
         return 1;
     }
 
-    IrohEndpoint *endpoint = iroh_net_init_node(TCHAT_ALPN);
+    IrohEndpoint *endpoint = iroh_net_init_node(0);
     if (!endpoint) {
-        fprintf(stderr, "Failed to initialize client local Iroh endpoint.\n");
+        fprintf(stderr, "Failed to initialize client network.\n");
         return 1;
     }
 
-    printf("Dialing server via P2P QUIC hole-punching...\n");
+    printf("Connecting to %s ...\n", node_id_str);
     IrohConnection *conn = iroh_net_connect(endpoint, node_id_str);
     if (!conn) {
-        fprintf(stderr, "Connection failure to target Iroh Node ID.\n");
+        fprintf(stderr, "Connection failure to target server.\n");
         return 1;
     }
     global_conn = conn;
@@ -175,14 +195,14 @@ int main() {
         if (read(STDIN_FILENO, &c, 1) <= 0) break;
 
         if (current_mode == STATE_SETTINGS) {
-            if (c == '\033') { 
+            if (c == '\033') {
                 uint8_t seq[2];
                 if (read(STDIN_FILENO, &seq[0], 1) > 0 && read(STDIN_FILENO, &seq[1], 1) > 0) {
                     if (seq[0] == '[') {
-                        if (seq[1] == 'A') { 
+                        if (seq[1] == 'A') {
                             selected_menu_item = (selected_menu_item - 1 + TOTAL_SETTINGS) % TOTAL_SETTINGS;
                             redraw_settings_menu();
-                        } else if (seq[1] == 'B') { 
+                        } else if (seq[1] == 'B') {
                             selected_menu_item = (selected_menu_item + 1) % TOTAL_SETTINGS;
                             redraw_settings_menu();
                         }
@@ -210,9 +230,9 @@ int main() {
         } else {
             if (c == '\n' || c == '\r') {
                 if (input_len == 0) continue;
-                
-                printf("\r\033[K"); 
-                
+
+                printf("\r\033[K");
+
                 if (strcmp(current_input, "/exit") == 0) {
                     break;
                 } else if (strcmp(current_input, "/settings") == 0) {
@@ -261,7 +281,7 @@ int main() {
                 printf(C_PRMPT "> " C_RST);
                 fflush(stdout);
                 pthread_mutex_unlock(&tui_lock);
-            } else if (c == 127 || c == 8) { 
+            } else if (c == 127 || c == 8) {
                 if (input_len > 0) {
                     input_len--;
                     current_input[input_len] = '\0';

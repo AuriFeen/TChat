@@ -7,6 +7,13 @@
 #include "protocol.h"
 #include "network.h"
 #include "ring_buffer.h"
+#include "config.h"
+#include "stun.h"
+
+#ifdef USE_UPNP
+#include <miniupnpc/miniupnpc.h>
+#include <miniupnpc/upnpcommands.h>
+#endif
 
 typedef struct {
     IrohConnection *conn;
@@ -86,7 +93,7 @@ void* handle_client_connection(void* arg) {
                 char welcome_msg[MAX_MSG];
                 snprintf(welcome_msg, sizeof(welcome_msg), "%s entered the secure channel.", users[index].name);
                 broadcast_server_msg(welcome_msg);
-            } 
+            }
             else if (hdr.type == TYPE_CHAT && users[index].active) {
                 strncpy(payload.nickname, users[index].name, MAX_NICK - 1);
                 pthread_mutex_lock(&server_lock);
@@ -138,18 +145,55 @@ void* handle_client_connection(void* arg) {
 int main() {
     memset(users, 0, sizeof(users));
 
-    IrohEndpoint *endpoint = iroh_net_init_node(TCHAT_ALPN);
+    ServerConfig cfg;
+    if (config_load_server("tchat_server.conf", &cfg) < 0) {
+        printf("[Config] tchat_server.conf not found, using defaults.\n");
+    }
+
+    IrohEndpoint *endpoint = iroh_net_init_node(cfg.port);
     if (!endpoint) {
-        fprintf(stderr, "Failed to initialize Iroh P2P Endpoint node.\n");
+        fprintf(stderr, "Failed to bind to port %d.\n", cfg.port);
         return 1;
     }
 
-    char *node_id = iroh_net_get_node_id_str(endpoint);
+    char public_ip[64] = {0};
+    int public_port = 0;
+    int stun_ok = (stun_discover_endpoint(cfg.stun_host, cfg.stun_port,
+                                          public_ip, sizeof(public_ip), &public_port) == 0);
+
     printf("========================================================\n");
-    printf(" TChat P2P Mesh Server Engine Initialized               \n");
-    printf(" Iroh Node ID: %s\n", node_id ? node_id : "UNKNOWN");
+    printf(" TChat Server\n");
+    if (cfg.alias[0]) printf(" Alias: %s\n", cfg.alias);
+    if (stun_ok) {
+        printf(" Public Endpoint: %s:%d\n", public_ip, public_port);
+        printf(" Give your friend:  %s:%d\n", public_ip, public_port);
+    } else {
+        printf(" STUN discovery failed — check internet connection.\n");
+    }
+    printf(" Listening on port: %d\n", cfg.port);
     printf("========================================================\n");
-    if (node_id) free(node_id);
+
+#ifdef USE_UPNP
+    if (cfg.upnp) {
+        struct UPNPDev *devlist = upnpDiscover(2000, NULL, NULL, 0, 0, 2, NULL);
+        if (devlist) {
+            char lanaddr[64], externalip[64];
+            struct UPNPUrls urls;
+            struct IGDdatas data;
+            if (UPNP_GetValidIGD(devlist, &urls, &data, lanaddr, sizeof(lanaddr)) == 1) {
+                UPNP_GetExternalIPAddress(urls.controlURL, data.first.servicetype, externalip);
+                char eport[8], iport[8];
+                snprintf(eport, sizeof(eport), "%d", cfg.port);
+                snprintf(iport, sizeof(iport), "%d", cfg.port);
+                UPNP_AddPortMapping(urls.controlURL, data.first.servicetype,
+                                    eport, iport, lanaddr, "TChat", "TCP", NULL, "0");
+                printf("[UPnP] Mapped %s:%s -> %s:%s\n", externalip, eport, lanaddr, iport);
+                FreeUPNPUrls(&urls);
+            }
+            freeUPNPDevlist(devlist);
+        }
+    }
+#endif
 
     while (1) {
         IrohConnection *conn = iroh_net_accept(endpoint);
